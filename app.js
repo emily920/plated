@@ -51,9 +51,18 @@ async function renderPantry() {
   const pantryMap = {}
   ;(pantry || []).forEach((p) => (pantryMap[p.ingredient_id] = p.have_it))
 
+  window.__pantryCache = { ingredients: ingredients || [], pantryMap }
+  drawPantry()
+}
+
+function drawPantry() {
+  const cache = window.__pantryCache || { ingredients: [], pantryMap: {} }
+  const { ingredients, pantryMap } = cache
+  const main = document.getElementById('main')
+
   const grouped = CATEGORIES.map((cat) => ({
     cat,
-    items: (ingredients || []).filter((i) => i.category === cat),
+    items: ingredients.filter((i) => i.category === cat),
   })).filter((g) => g.items.length > 0)
 
   let html = card(`
@@ -85,13 +94,18 @@ async function renderPantry() {
   main.innerHTML = html
 }
 
-async function toggleHave(ingredientId, current) {
-  await client.from('pantry').upsert({
+function toggleHave(ingredientId, current) {
+  // update the UI immediately, then save in the background --
+  // no waiting on a network round trip before the tap feels done
+  const cache = window.__pantryCache
+  if (cache) cache.pantryMap[ingredientId] = !current
+  drawPantry()
+
+  client.from('pantry').upsert({
     ingredient_id: ingredientId,
     have_it: !current,
     updated_at: new Date().toISOString(),
   })
-  renderPantry()
 }
 
 async function addIngredient(e) {
@@ -120,22 +134,37 @@ async function renderRecipes(showForm) {
       client.from('recipe_ingredients').select('*'),
     ])
 
-  // cache the raw data so edit buttons can look things up without refetching
-  window.__recipesCache = { recipes: recipes || [], ingredients: ingredients || [], recipeIngredients: recipeIngredients || [] }
-
   const pantryMap = {}
   ;(pantry || []).forEach((p) => (pantryMap[p.ingredient_id] = p.have_it))
   const lastCookedMap = {}
   ;(lastCooked || []).forEach((r) => (lastCookedMap[r.recipe_id] = r.last_cooked))
 
+  // cache everything needed to redraw so UI-only actions (picking ingredients,
+  // typing a quantity, opening the form) never have to hit Supabase again
+  window.__recipesCache = {
+    recipes: recipes || [],
+    ingredients: ingredients || [],
+    recipeIngredients: recipeIngredients || [],
+    pantryMap,
+    lastCookedMap,
+  }
+
+  drawRecipes(showForm)
+}
+
+function drawRecipes(showForm) {
+  const cache = window.__recipesCache || { recipes: [], ingredients: [], recipeIngredients: [], pantryMap: {}, lastCookedMap: {} }
+  const { recipes, ingredients, recipeIngredients, pantryMap, lastCookedMap } = cache
+  const main = document.getElementById('main')
+
   function missingFor(recipeId) {
-    return (recipeIngredients || [])
+    return recipeIngredients
       .filter((ri) => ri.recipe_id === recipeId && !pantryMap[ri.ingredient_id])
-      .map((ri) => (ingredients || []).find((i) => i.id === ri.ingredient_id)?.name)
+      .map((ri) => ingredients.find((i) => i.id === ri.ingredient_id)?.name)
       .filter(Boolean)
   }
 
-  const editingRecipe = editingRecipeId ? (recipes || []).find((r) => r.id === editingRecipeId) : null
+  const editingRecipe = editingRecipeId ? recipes.find((r) => r.id === editingRecipeId) : null
 
   let html = `<div class="row" style="justify-content:space-between;margin-bottom:12px;">
     <h2 class="display" style="margin:0;">Recipe box</h2>
@@ -155,7 +184,7 @@ async function renderRecipes(showForm) {
         <div>
           <p class="mono muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Ingredients used</p>
           <div class="row" id="recipe-ingredient-picker">
-            ${(ingredients || [])
+            ${ingredients
               .map((i) => {
                 const selected = i.id in recipeFormSelected
                 return `<span class="chip ${selected ? 'have' : ''}" onclick="toggleRecipeIngredient('${i.id}')">${escapeHtml(i.name)}</span>
@@ -169,7 +198,7 @@ async function renderRecipes(showForm) {
     `)
   }
 
-  ;(recipes || []).forEach((r) => {
+  recipes.forEach((r) => {
     const missing = missingFor(r.id)
     const canMake = missing.length === 0
     const last = lastCookedMap[r.id]
@@ -190,7 +219,7 @@ async function renderRecipes(showForm) {
     `)
   })
 
-  if (!recipes || recipes.length === 0) {
+  if (recipes.length === 0) {
     html += '<p class="muted" style="font-size:14px;">No recipes yet — add your first one above.</p>'
   }
 
@@ -201,7 +230,7 @@ function toggleRecipeForm() {
   recipeFormSelected = {}
   editingRecipeId = null
   const isOpen = document.getElementById('recipe-ingredient-picker') !== null
-  renderRecipes(!isOpen)
+  drawRecipes(!isOpen)
 }
 
 function startEditRecipe(recipeId) {
@@ -213,14 +242,14 @@ function startEditRecipe(recipeId) {
     .forEach((ri) => {
       recipeFormSelected[ri.ingredient_id] = ri.quantity || ''
     })
-  renderRecipes(true)
+  drawRecipes(true)
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function toggleRecipeIngredient(id) {
   if (id in recipeFormSelected) delete recipeFormSelected[id]
   else recipeFormSelected[id] = ''
-  renderRecipes(true)
+  drawRecipes(true)
 }
 
 function setRecipeIngredientQty(id, value) {
