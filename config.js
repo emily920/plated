@@ -5,5 +5,5 @@
 // as any other app using Supabase's public anon key straight from the
 // frontend. Just keep your deployed link between the two of you.
 
-const SUPABASE_URL = 'https://oxbdkpywkjgwtuoiakhd.supabase.co'
-const SUPABASE_ANON_KEY = 'sb_publishable_IHHuQm3GMuXrkn2uSo3ptg_dpCVP4C7'
+const SUPABASE_URL = 'https://your-project-ref.supabase.co'
+const SUPABASE_ANON_KEY = 'your-anon-public-key'

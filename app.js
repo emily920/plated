@@ -105,6 +105,8 @@ async function addIngredient(e) {
 }
 
 // ---------- RECIPES ----------
+let editingRecipeId = null
+
 async function renderRecipes(showForm) {
   const main = document.getElementById('main')
   main.innerHTML = '<p class="muted">Loading recipes…</p>'
@@ -118,6 +120,9 @@ async function renderRecipes(showForm) {
       client.from('recipe_ingredients').select('*'),
     ])
 
+  // cache the raw data so edit buttons can look things up without refetching
+  window.__recipesCache = { recipes: recipes || [], ingredients: ingredients || [], recipeIngredients: recipeIngredients || [] }
+
   const pantryMap = {}
   ;(pantry || []).forEach((p) => (pantryMap[p.ingredient_id] = p.have_it))
   const lastCookedMap = {}
@@ -130,6 +135,8 @@ async function renderRecipes(showForm) {
       .filter(Boolean)
   }
 
+  const editingRecipe = editingRecipeId ? (recipes || []).find((r) => r.id === editingRecipeId) : null
+
   let html = `<div class="row" style="justify-content:space-between;margin-bottom:12px;">
     <h2 class="display" style="margin:0;">Recipe box</h2>
     <button class="primary" onclick="toggleRecipeForm()">${showForm ? 'Close' : '+ New recipe'}</button>
@@ -138,11 +145,12 @@ async function renderRecipes(showForm) {
   if (showForm) {
     html += card(`
       <form onsubmit="submitRecipe(event)" class="space-y">
-        <input id="recipe-name" placeholder="Recipe name" required style="width:100%;" />
-        <textarea id="recipe-instructions" placeholder="Instructions" rows="3" style="width:100%;"></textarea>
+        ${editingRecipe ? '<p class="mono muted" style="font-size:11px;margin:0 0 4px;">EDITING</p>' : ''}
+        <input id="recipe-name" placeholder="Recipe name" required style="width:100%;" value="${editingRecipe ? escapeHtml(editingRecipe.name) : ''}" />
+        <textarea id="recipe-instructions" placeholder="Instructions" rows="3" style="width:100%;">${editingRecipe ? escapeHtml(editingRecipe.instructions || '') : ''}</textarea>
         <div class="row">
-          <input id="recipe-prep-minutes" type="number" placeholder="Prep minutes" style="width:130px;" />
-          <input id="recipe-tags" placeholder="Tags, comma separated" style="flex:1;" />
+          <input id="recipe-prep-minutes" type="number" placeholder="Prep minutes" style="width:130px;" value="${editingRecipe && editingRecipe.prep_minutes ? editingRecipe.prep_minutes : ''}" />
+          <input id="recipe-tags" placeholder="Tags, comma separated" style="flex:1;" value="${editingRecipe && editingRecipe.tags ? escapeHtml(editingRecipe.tags.join(', ')) : ''}" />
         </div>
         <div>
           <p class="mono muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Ingredients used</p>
@@ -156,7 +164,7 @@ async function renderRecipes(showForm) {
               .join('')}
           </div>
         </div>
-        <button type="submit" class="secondary">Save recipe</button>
+        <button type="submit" class="secondary">${editingRecipe ? 'Save changes' : 'Save recipe'}</button>
       </form>
     `)
   }
@@ -175,7 +183,10 @@ async function renderRecipes(showForm) {
       </p>
       ${!canMake ? `<p style="font-size:12px;color:#8F3E22;margin-top:8px;">Need: ${missing.join(', ')}</p>` : ''}
       ${r.instructions ? `<p style="font-size:13px;margin-top:10px;white-space:pre-wrap;">${escapeHtml(r.instructions)}</p>` : ''}
-      <button class="dark" style="margin-top:10px;" onclick="logCookedFromRecipe('${r.id}')">Mark cooked today</button>
+      <div class="row" style="margin-top:10px;gap:6px;">
+        <button class="dark" onclick="logCookedFromRecipe('${r.id}')">Mark cooked today</button>
+        <button class="outline" onclick="startEditRecipe('${r.id}')">Edit</button>
+      </div>
     `)
   })
 
@@ -188,8 +199,22 @@ async function renderRecipes(showForm) {
 
 function toggleRecipeForm() {
   recipeFormSelected = {}
+  editingRecipeId = null
   const isOpen = document.getElementById('recipe-ingredient-picker') !== null
   renderRecipes(!isOpen)
+}
+
+function startEditRecipe(recipeId) {
+  const cache = window.__recipesCache || { recipeIngredients: [] }
+  editingRecipeId = recipeId
+  recipeFormSelected = {}
+  cache.recipeIngredients
+    .filter((ri) => ri.recipe_id === recipeId)
+    .forEach((ri) => {
+      recipeFormSelected[ri.ingredient_id] = ri.quantity || ''
+    })
+  renderRecipes(true)
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function toggleRecipeIngredient(id) {
@@ -214,26 +239,34 @@ async function submitRecipe(e) {
     .map((t) => t.trim())
     .filter(Boolean)
 
-  const { data: recipe, error } = await client
-    .from('recipes')
-    .insert({
-      name,
-      instructions,
-      prep_minutes: prepMinutes ? parseInt(prepMinutes, 10) : null,
-      tags,
-    })
-    .select()
-    .single()
-
-  if (!error && recipe) {
-    const rows = Object.entries(recipeFormSelected).map(([ingredient_id, quantity]) => ({
-      recipe_id: recipe.id,
-      ingredient_id,
-      quantity,
-    }))
-    if (rows.length) await client.from('recipe_ingredients').insert(rows)
+  const payload = {
+    name,
+    instructions,
+    prep_minutes: prepMinutes ? parseInt(prepMinutes, 10) : null,
+    tags,
   }
+
+  let recipeId = editingRecipeId
+
+  if (editingRecipeId) {
+    await client.from('recipes').update(payload).eq('id', editingRecipeId)
+    // replace this recipe's ingredient list wholesale to match the form
+    await client.from('recipe_ingredients').delete().eq('recipe_id', editingRecipeId)
+  } else {
+    const { data: recipe, error } = await client.from('recipes').insert(payload).select().single()
+    if (error || !recipe) return
+    recipeId = recipe.id
+  }
+
+  const rows = Object.entries(recipeFormSelected).map(([ingredient_id, quantity]) => ({
+    recipe_id: recipeId,
+    ingredient_id,
+    quantity,
+  }))
+  if (rows.length) await client.from('recipe_ingredients').insert(rows)
+
   recipeFormSelected = {}
+  editingRecipeId = null
   renderRecipes(false)
 }
 
